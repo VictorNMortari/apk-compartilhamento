@@ -1,15 +1,22 @@
 import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
+  Alert,
   FlatList,
   Image,
+  Linking,
+  Modal,
   Pressable,
   SafeAreaView,
+  Share,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { useShareIntent } from 'expo-share-intent';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Sharing from 'expo-sharing';
+import { File } from 'expo-file-system';
 
 // Transforma o tamanho em bytes num texto legível (ex.: "2.4 MB")
 function formatarTamanho(bytes) {
@@ -19,6 +26,40 @@ function formatarTamanho(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+// Abre o arquivo em outro app do celular (leitor de PDF, galeria, Excel...).
+// Cria uma Intent ACTION_VIEW e deixa o Android escolher o app certo.
+async function abrirArquivo(item) {
+  try {
+    // Outros apps não podem ler "file://" do nosso app. Por isso convertemos
+    // o caminho num "content://", um link seguro que o Android entrega ao outro app.
+    const arquivo = new File(item.caminho);
+
+    await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+      data: arquivo.contentUri,
+      type: item.mimeType,
+      flags: 1, // FLAG_GRANT_READ_URI_PERMISSION: dá permissão de leitura ao outro app
+    });
+  } catch (e) {
+    Alert.alert(
+      'Não foi possível abrir',
+      'Nenhum aplicativo do celular consegue abrir este tipo de arquivo.'
+    );
+  }
+}
+
+// Manda o arquivo para outro app (WhatsApp, e-mail, Drive...).
+// Cria uma Intent ACTION_SEND, o mesmo caminho que o WhatsApp usou para mandar para nós.
+async function compartilharArquivo(item) {
+  try {
+    await Sharing.shareAsync(item.caminho, {
+      mimeType: item.mimeType,
+      dialogTitle: 'Enviar para...',
+    });
+  } catch (e) {
+    Alert.alert('Erro', 'Não foi possível compartilhar este arquivo.');
+  }
+}
+
 export default function App() {
   // O hook avisa quando outro app (ex.: WhatsApp) compartilha algo com o nosso app.
   // O Android entrega esses dados por meio de uma "Intent" (ACTION_SEND).
@@ -26,6 +67,9 @@ export default function App() {
 
   // Lista com tudo que já foi recebido enquanto o app está aberto
   const [itens, setItens] = useState([]);
+
+  // Imagem aberta em tela cheia (null = nenhuma)
+  const [imagemAberta, setImagemAberta] = useState(null);
 
   useEffect(() => {
     if (!hasShareIntent) return;
@@ -52,6 +96,7 @@ export default function App() {
         id: Date.now() + '-texto',
         tipo: 'texto',
         texto: shareIntent.text,
+        link: shareIntent.webUrl, // link encontrado no texto (ou null)
       });
     }
 
@@ -68,6 +113,20 @@ export default function App() {
         <View style={styles.card}>
           <Text style={styles.etiqueta}>TEXTO / LINK</Text>
           <Text style={styles.texto}>{item.texto}</Text>
+
+          <View style={styles.acoes}>
+            {item.link && (
+              <Pressable style={styles.acao} onPress={() => Linking.openURL(item.link)}>
+                <Text style={styles.acaoTexto}>Abrir link</Text>
+              </Pressable>
+            )}
+            <Pressable
+              style={[styles.acao, styles.acaoSecundaria]}
+              onPress={() => Share.share({ message: item.texto })}
+            >
+              <Text style={[styles.acaoTexto, styles.acaoTextoSecundario]}>Compartilhar</Text>
+            </Pressable>
+          </View>
         </View>
       );
     }
@@ -77,11 +136,30 @@ export default function App() {
     return (
       <View style={styles.card}>
         <Text style={styles.etiqueta}>ARQUIVO</Text>
-        {ehImagem && <Image source={{ uri: item.caminho }} style={styles.imagem} />}
+
+        {/* Tocar na imagem abre ela em tela cheia dentro do app */}
+        {ehImagem && (
+          <Pressable onPress={() => setImagemAberta(item.caminho)}>
+            <Image source={{ uri: item.caminho }} style={styles.imagem} />
+          </Pressable>
+        )}
+
         <Text style={styles.nome}>{item.nome}</Text>
         <Text style={styles.detalhe}>
           {item.mimeType} {formatarTamanho(item.tamanho)}
         </Text>
+
+        <View style={styles.acoes}>
+          <Pressable style={styles.acao} onPress={() => abrirArquivo(item)}>
+            <Text style={styles.acaoTexto}>Abrir</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.acao, styles.acaoSecundaria]}
+            onPress={() => compartilharArquivo(item)}
+          >
+            <Text style={[styles.acaoTexto, styles.acaoTextoSecundario]}>Compartilhar</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -110,6 +188,21 @@ export default function App() {
           <Text style={styles.botaoTexto}>Limpar lista</Text>
         </Pressable>
       )}
+
+      {/* Visualizador de imagem em tela cheia */}
+      <Modal
+        visible={imagemAberta !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImagemAberta(null)} // botão "voltar" do Android
+      >
+        <Pressable style={styles.fundoModal} onPress={() => setImagemAberta(null)}>
+          {imagemAberta && (
+            <Image source={{ uri: imagemAberta }} style={styles.imagemCheia} />
+          )}
+          <Text style={styles.dicaFechar}>Toque para fechar</Text>
+        </Pressable>
+      </Modal>
 
       <StatusBar style="auto" />
     </SafeAreaView>
@@ -159,6 +252,30 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     resizeMode: 'cover',
   },
+  acoes: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  acao: {
+    flex: 1,
+    backgroundColor: '#25a35a',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  acaoSecundaria: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#25a35a',
+  },
+  acaoTexto: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  acaoTextoSecundario: {
+    color: '#25a35a',
+  },
   vazio: {
     textAlign: 'center',
     color: '#666',
@@ -180,5 +297,20 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  fundoModal: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imagemCheia: {
+    width: '100%',
+    height: '80%',
+    resizeMode: 'contain',
+  },
+  dicaFechar: {
+    color: '#ccc',
+    marginTop: 16,
   },
 });

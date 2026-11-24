@@ -34,7 +34,8 @@
             "*/*"
           ]
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "extra": {
       "eas": {
